@@ -21,6 +21,7 @@ from .detectors.metadata_detector import MetadataDetector
 from .detectors.rendering_detector import RenderingDetector
 from .detectors.encoding_detector import EncodingDetector
 from .detectors.prompt_detector import PromptDetector
+from .detectors.table_detector import TableDetector
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class PDFAnalyzer:
             OpacityDetector(self.pdf_path, self.config),
             PromptDetector(self.pdf_path, self.config),
             RenderingDetector(self.pdf_path, self.config),
+            TableDetector(self.pdf_path, self.config),
         ]
 
         for detector in detectors:

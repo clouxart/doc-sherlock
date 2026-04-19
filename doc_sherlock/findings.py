@@ -32,6 +32,7 @@ class FindingType(str, Enum):
     LOW_OPACITY = "low_opacity"
     RENDERING_DISCREPANCY = "rendering_discrepancy"
     PROMPT_INJECTION_JAILBREAK = "prompt_injection_jailbreak"
+    HIDDEN_TABLE_CONTENT = "hidden_table_content"
 
 
 class Severity(str, Enum):
