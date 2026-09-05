@@ -1,10 +1,10 @@
 """
-Detector for identifying text positioned outside page boundaries.
+Detector for identifying text positioned outside the page boundaries.
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional
 import pypdf
 import pdfplumber
 
@@ -15,106 +15,100 @@ logger = logging.getLogger(__name__)
 
 
 class BoundaryDetector(BaseDetector):
-    """Detector for identifying text positioned outside normal page boundaries."""
+    """Detector for identifying text positioned outside the physical page box.
+
+    A word is reported only when its bounding box falls outside the page box
+    (``page.bbox`` - the CropBox where one is present, otherwise the MediaBox)
+    by more than ``boundary_tolerance_pt``. Text inside the page, however close
+    to the edge, is a margin, not an anomaly: an ordinary letterhead or a
+    Word-default 0.5 in footer must not be reported.
+    """
+
     def __init__(self, pdf_path: str, config: Optional[Dict[str, Any]] = None):
         super().__init__(pdf_path, config)
         self._load_config()
-    
+
     def _load_config(self) -> None:
         """Load configuration with default values."""
-        self.margin_thresholds = self.config.get("margin_thresholds", {
-            "left": 0.05,
-            "right": 0.95,
-            "top": 0.05,
-            "bottom": 0.95,
-        })
-        
+        self.boundary_tolerance_pt = float(self.config.get("boundary_tolerance_pt", 1.0))
+
     def detect(self) -> List[Finding]:
         """
         Run the detector and return any findings.
-        
+
         Returns:
             List of findings from the detector
         """
-        findings = []
-        
+        findings: List[Finding] = []
+        tolerance = self.boundary_tolerance_pt
+
         try:
             with pdfplumber.open(self.pdf_path) as pdf:
-                # Check each page
                 for i, page in enumerate(pdf.pages):
-                    page_width = float(page.width)
-                    page_height = float(page.height)
                     page_number = i + 1
-                    
-                    # Define page boundaries
-                    left_boundary = self.margin_thresholds["left"] * page_width
-                    right_boundary = self.margin_thresholds["right"] * page_width
-                    top_boundary = self.margin_thresholds["top"] * page_height
-                    bottom_boundary = self.margin_thresholds["bottom"] * page_height
-                    
-                    # Extract text with positioning info
+
+                    # page.bbox is the page's own box in pdfplumber's top-down
+                    # coordinate space, which is what word coordinates are
+                    # relative to. CropBox where present, else MediaBox.
+                    page_left, page_top, page_right, page_bottom = (
+                        float(value) for value in page.bbox
+                    )
+                    page_width = float(page.width) or 1.0
+                    page_height = float(page.height) or 1.0
+
                     words = page.extract_words(
-                        x_tolerance=3, 
+                        x_tolerance=3,
                         y_tolerance=3,
                         keep_blank_chars=True,
-                        use_text_flow=True
+                        use_text_flow=True,
                     )
-                    
-                    # Check each word for boundary violations
+
                     for word in words:
-                        x0 = word.get("x0", 0)
-                        y0 = word.get("top", 0)
-                        x1 = word.get("x1", 0)
-                        y1 = word.get("bottom", 0)
                         text = word.get("text", "")
-                        
+
                         # Skip empty text
                         if not text.strip():
                             continue
-                        
-                        # Check if outside boundaries
-                        outside_left = x0 < left_boundary
-                        outside_right = x1 > right_boundary
-                        outside_top = y0 < top_boundary
-                        outside_bottom = y1 > bottom_boundary
-                        
-                        if outside_left or outside_right or outside_top or outside_bottom:
-                            # Determine which boundaries are violated
-                            violations = []
-                            if outside_left:
-                                violations.append("left")
-                            if outside_right:
-                                violations.append("right")
-                            if outside_top:
-                                violations.append("top")
-                            if outside_bottom:
-                                violations.append("bottom")
-                                
-                            # Determine severity based on how far outside
+
+                        x0 = float(word.get("x0", 0.0))
+                        x1 = float(word.get("x1", 0.0))
+                        y0 = float(word.get("top", 0.0))
+                        y1 = float(word.get("bottom", 0.0))
+
+                        # How far the word sticks out of the page box, in points.
+                        overflow_pt = {
+                            "left": page_left - x0,
+                            "right": x1 - page_right,
+                            "top": page_top - y0,
+                            "bottom": y1 - page_bottom,
+                        }
+                        violations = [
+                            name for name, over in overflow_pt.items() if over > tolerance
+                        ]
+                        if not violations:
+                            continue
+
+                        outside_points = {
+                            name: max(over, 0.0) for name, over in overflow_pt.items()
+                        }
+                        outside_percentages = {
+                            "left": outside_points["left"] / page_width,
+                            "right": outside_points["right"] / page_width,
+                            "top": outside_points["top"] / page_height,
+                            "bottom": outside_points["bottom"] / page_height,
+                        }
+                        max_outside = max(outside_percentages.values())
+
+                        # Severity by how far outside the page the text sits.
+                        if max_outside > 0.5:
+                            severity = Severity.HIGH
+                        elif max_outside > 0.2:
                             severity = Severity.MEDIUM
-                            
-                            # Calculate how far outside as percentage of page dimension
-                            outside_percentages = {
-                                "left": abs(x0 - left_boundary) / page_width if outside_left else 0,
-                                "right": abs(x1 - right_boundary) / page_width if outside_right else 0,
-                                "top": abs(y0 - top_boundary) / page_height if outside_top else 0,
-                                "bottom": abs(y1 - bottom_boundary) / page_height if outside_bottom else 0,
-                            }
-                            
-                            max_outside = max(outside_percentages.values())
-                            
-                            # Adjust severity based on how far outside
-                            if max_outside > 0.5:
-                                severity = Severity.HIGH
-                            elif max_outside > 0.2:
-                                severity = Severity.MEDIUM
-                            elif max_outside > 0.05:
-                                severity = Severity.LOW
-                            else:
-                                severity = Severity.LOW
-                                
-                            # Create finding
-                            finding = Finding(
+                        else:
+                            severity = Severity.LOW
+
+                        findings.append(
+                            Finding(
                                 finding_type=FindingType.OUTSIDE_BOUNDARY,
                                 description=f"Text outside {', '.join(violations)} page boundary",
                                 severity=severity,
@@ -128,12 +122,19 @@ class BoundaryDetector(BaseDetector):
                                 text_content=text,
                                 metadata={
                                     "violations": violations,
+                                    "outside_points": outside_points,
                                     "outside_percentages": outside_percentages,
-                                }
+                                    "page_box": {
+                                        "x0": page_left,
+                                        "top": page_top,
+                                        "x1": page_right,
+                                        "bottom": page_bottom,
+                                    },
+                                    "tolerance_pt": tolerance,
+                                },
                             )
-                            
-                            findings.append(finding)
+                        )
         except Exception as e:
             logger.error(f"Error in BoundaryDetector: {str(e)}")
-                
+
         return findings
