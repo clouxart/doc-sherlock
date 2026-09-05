@@ -49,8 +49,9 @@ class TestPromptDetector(BaseDetectorTest):
         prompt_findings = [f for f in findings if f.finding_type == FindingType.PROMPT_INJECTION_JAILBREAK]
         assert len(prompt_findings) > 0, "Should detect 'new instruction' pattern"
         
-        # Check severity is HIGH
-        assert all(f.severity == Severity.HIGH for f in prompt_findings)
+        # Prompt injection is CRITICAL, not HIGH: prompt_detector.py emits
+        # Severity.CRITICAL and the product's risk ladder keys on it.
+        assert all(f.severity == Severity.CRITICAL for f in prompt_findings)
         
         # Check metadata contains rule info
         for finding in prompt_findings:
